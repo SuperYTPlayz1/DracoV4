@@ -1,0 +1,569 @@
+#!/bin/bash
+
+# ============================================================
+#                 DRACO PANEL V3 INSTALLER
+#                  AUTOMATIC PANEL SETUP
+# ============================================================
+
+set -Eeuo pipefail
+
+# ============================================================
+# COLORS
+# ============================================================
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+MAGENTA='\033[0;35m'
+CYAN='\033[0;36m'
+WHITE='\033[1;37m'
+GRAY='\033[0;90m'
+NC='\033[0m'
+
+# ============================================================
+# CONFIG
+# ============================================================
+
+REPO_URL="https://github.com/dragonlabsdev/v3panel"
+INSTALL_DIR="/opt/draco-panel"
+NODE_MAJOR="23"
+
+# ============================================================
+# ASCII
+# ============================================================
+
+ASCII_ART='
+██████╗ ██████╗  █████╗  ██████╗ ██████╗
+██╔══██╗██╔══██╗██╔══██╗██╔════╝██╔═══██╗
+██║  ██║██████╔╝███████║██║     ██║   ██║
+██║  ██║██╔══██╗██╔══██║██║     ██║   ██║
+██████╔╝██║  ██║██║  ██║╚██████╗╚██████╔╝
+╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═════╝
+
+              PANEL V3 INSTALLER
+             Powered by Suprial
+'
+
+# ============================================================
+# FUNCTIONS
+# ============================================================
+
+info() {
+    echo -e "${CYAN}[INFO]${NC} $1"
+}
+
+success() {
+    echo -e "${GREEN}[✓]${NC} $1"
+}
+
+warning() {
+    echo -e "${YELLOW}[!]${NC} $1"
+}
+
+error() {
+    echo -e "${RED}[✗]${NC} $1"
+}
+
+section() {
+    echo ""
+    echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${BOLD}${MAGENTA:-}${NC}"
+    echo -e "${WHITE}  $1${NC}"
+    echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+}
+
+fail() {
+    error "$1"
+    echo ""
+    error "Installer stopped."
+    exit 1
+}
+
+pause_screen() {
+    echo ""
+    read -rp "$(echo -e "${GRAY}Press ENTER to continue...${NC}")"
+}
+
+# ============================================================
+# ERROR HANDLER
+# ============================================================
+
+trap '
+echo ""
+echo -e "${RED}[✗] Installer failed at line ${LINENO}.${NC}"
+echo -e "${YELLOW}Check the error above and try again.${NC}"
+' ERR
+
+# ============================================================
+# START
+# ============================================================
+
+clear
+
+echo -e "${CYAN}${ASCII_ART}${NC}"
+echo ""
+echo -e "${GREEN}Automatic Draco Panel V3 Installer${NC}"
+echo -e "${GRAY}Repository:${NC} ${REPO_URL}"
+echo ""
+
+# ============================================================
+# ROOT CHECK
+# ============================================================
+
+section "ROOT ACCESS CHECK"
+
+if [ "$EUID" -ne 0 ]; then
+    fail "Please run this installer as root."
+fi
+
+success "Root access confirmed."
+
+# ============================================================
+# PM2 NAME
+# ============================================================
+
+section "PANEL CONFIGURATION"
+
+echo ""
+echo -e "${CYAN}Choose a PM2 process name for your panel.${NC}"
+echo ""
+echo -e "${GRAY}Examples:${NC}"
+echo "  draco-panel"
+echo "  suprial-panel"
+echo "  game-panel"
+echo "  panel"
+echo ""
+
+while true; do
+
+    read -rp "$(echo -e "${YELLOW}PM2 process name: ${NC}")" PM2_NAME
+
+    PM2_NAME="$(echo "$PM2_NAME" | xargs)"
+
+    if [[ "$PM2_NAME" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+        break
+    fi
+
+    error "Invalid name. Use only letters, numbers, -, _ or ."
+done
+
+success "PM2 name selected: ${PM2_NAME}"
+
+# ============================================================
+# SYSTEM PREPARATION
+# ============================================================
+
+section "SYSTEM PREPARATION"
+
+export DEBIAN_FRONTEND=noninteractive
+
+info "Updating package lists..."
+
+apt-get update -y
+
+info "Installing required packages..."
+
+apt-get install -y \
+    curl \
+    git \
+    ca-certificates \
+    gnupg \
+    unzip \
+    zip \
+    build-essential \
+    python3 \
+    make \
+    g++
+
+success "System packages installed."
+
+# ============================================================
+# NODE.JS
+# ============================================================
+
+section "NODE.JS ${NODE_MAJOR}"
+
+CURRENT_NODE=""
+
+if command -v node >/dev/null 2>&1; then
+    CURRENT_NODE="$(node -v | sed 's/^v//' | cut -d. -f1)"
+fi
+
+if [ "$CURRENT_NODE" != "$NODE_MAJOR" ]; then
+
+    info "Installing Node.js ${NODE_MAJOR}..."
+
+    curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash -
+
+    apt-get install -y nodejs
+
+else
+
+    success "Node.js ${NODE_MAJOR} already installed."
+
+fi
+
+echo ""
+echo -e "${GREEN}Node.js:${NC} $(node -v)"
+echo -e "${GREEN}NPM:${NC}     $(npm -v)"
+
+# ============================================================
+# PREPARE DIRECTORY
+# ============================================================
+
+section "PREPARING INSTALLATION DIRECTORY"
+
+mkdir -p /opt
+
+if [ -d "$INSTALL_DIR" ]; then
+
+    warning "Existing installation detected."
+
+    BACKUP_DIR="/opt/draco-panel-backup-$(date +%Y%m%d-%H%M%S)"
+
+    info "Creating backup:"
+    echo "  $BACKUP_DIR"
+
+    mv "$INSTALL_DIR" "$BACKUP_DIR"
+
+    success "Existing installation backed up."
+
+fi
+
+# ============================================================
+# CLONE
+# ============================================================
+
+section "CLONING PANEL"
+
+info "Cloning repository..."
+
+git clone "$REPO_URL" "$INSTALL_DIR"
+
+cd "$INSTALL_DIR"
+
+success "Repository cloned."
+
+# ============================================================
+# FIND PANEL ZIP
+# ============================================================
+
+section "LOCATING PANEL PACKAGE"
+
+PANEL_ZIP=""
+
+if [ -f "panel.zip" ]; then
+    PANEL_ZIP="panel.zip"
+else
+    PANEL_ZIP="$(find . -maxdepth 2 -type f -iname 'panel.zip' | head -n 1 || true)"
+fi
+
+if [ -z "$PANEL_ZIP" ]; then
+    fail "panel.zip was not found inside the repository."
+fi
+
+success "Found panel package:"
+echo "  $PANEL_ZIP"
+
+# ============================================================
+# EXTRACT
+# ============================================================
+
+section "EXTRACTING PANEL"
+
+info "Extracting ${PANEL_ZIP}..."
+
+unzip -o "$PANEL_ZIP"
+
+success "Panel archive extracted."
+
+# ============================================================
+# LOCATE PANEL DIRECTORY
+# ============================================================
+
+if [ -d "$INSTALL_DIR/panel" ]; then
+
+    PANEL_PATH="$INSTALL_DIR/panel"
+
+else
+
+    PANEL_PATH="$(find "$INSTALL_DIR" -maxdepth 2 -type d -name "panel" | head -n 1 || true)"
+
+fi
+
+if [ -z "$PANEL_PATH" ] || [ ! -d "$PANEL_PATH" ]; then
+    fail "Extracted panel directory was not found."
+fi
+
+cd "$PANEL_PATH"
+
+success "Panel directory:"
+echo "  $PANEL_PATH"
+
+# ============================================================
+# PACKAGE.JSON CHECK
+# ============================================================
+
+section "VERIFYING PANEL"
+
+if [ ! -f "package.json" ]; then
+    fail "package.json was not found."
+fi
+
+success "package.json found."
+
+# ============================================================
+# NPM INSTALL
+# ============================================================
+
+section "INSTALLING NPM DEPENDENCIES"
+
+info "Running npm install..."
+
+npm install
+
+success "NPM dependencies installed."
+
+# ============================================================
+# DATABASE SEED
+# ============================================================
+
+section "DATABASE SETUP"
+
+if npm run | grep -q "seed"; then
+
+    info "Running database seed..."
+
+    npm run seed
+
+    success "Database seeded."
+
+else
+
+    warning "npm run seed script was not found."
+    warning "Skipping database seed."
+
+fi
+
+# ============================================================
+# USER CREATION
+# ============================================================
+
+section "PANEL USER"
+
+if npm run | grep -q "createUser"; then
+
+    echo ""
+    echo -e "${YELLOW}Panel user creation wizard will start now.${NC}"
+    echo -e "${GRAY}Enter your administrator account details.${NC}"
+    echo ""
+
+    npm run createUser
+
+    success "Panel user setup completed."
+
+else
+
+    warning "createUser script was not found."
+    warning "Skipping user creation."
+
+fi
+
+# ============================================================
+# PM2 INSTALL
+# ============================================================
+
+section "PM2 PROCESS MANAGER"
+
+if command -v pm2 >/dev/null 2>&1; then
+
+    success "PM2 already installed."
+
+else
+
+    info "Installing PM2..."
+
+    npm install pm2@latest -g
+
+    success "PM2 installed."
+
+fi
+
+echo ""
+echo -e "${GREEN}PM2:${NC} $(pm2 -v)"
+
+# ============================================================
+# OLD PM2 PROCESS
+# ============================================================
+
+section "PREPARING PM2"
+
+pm2 delete "$PM2_NAME" 2>/dev/null || true
+
+# ============================================================
+# START PANEL
+# ============================================================
+
+section "STARTING PANEL"
+
+cd "$PANEL_PATH"
+
+if [ ! -f "index.js" ]; then
+    warning "index.js was not found."
+
+    if [ -f "package.json" ]; then
+        info "Attempting to use npm start instead."
+
+        pm2 start npm \
+            --name "$PM2_NAME" \
+            -- start
+    else
+        fail "Neither index.js nor package.json was found."
+    fi
+
+else
+
+    pm2 start index.js \
+        --name "$PM2_NAME"
+
+fi
+
+success "Panel started."
+
+# ============================================================
+# PM2 SAVE
+# ============================================================
+
+section "SAVING PM2 PROCESS"
+
+pm2 save
+
+success "PM2 process list saved."
+
+# ============================================================
+# PM2 STARTUP
+# ============================================================
+
+section "PM2 AUTO START"
+
+if command -v systemctl >/dev/null 2>&1 && \
+   [ -d /run/systemd/system ]; then
+
+    info "Systemd detected."
+
+    STARTUP_OUTPUT="$(pm2 startup systemd -u root --hp /root 2>&1 || true)"
+
+    echo "$STARTUP_OUTPUT"
+
+    STARTUP_COMMAND="$(
+        echo "$STARTUP_OUTPUT" |
+        grep -E 'sudo .*pm2 startup|env PATH=.*pm2 startup' |
+        tail -1 ||
+        true
+    )"
+
+    if [ -n "$STARTUP_COMMAND" ]; then
+
+        info "Applying PM2 startup command..."
+
+        eval "$STARTUP_COMMAND" || true
+
+    fi
+
+    pm2 save
+
+    success "PM2 auto-start configured."
+
+else
+
+    warning "Systemd is not available on this VPS."
+    warning "PM2 startup service was skipped."
+    echo ""
+    echo -e "${YELLOW}The panel is still running through PM2.${NC}"
+
+fi
+
+# ============================================================
+# WAIT
+# ============================================================
+
+section "STARTUP VERIFICATION"
+
+info "Waiting for panel process..."
+
+sleep 5
+
+# ============================================================
+# PM2 STATUS
+# ============================================================
+
+section "PM2 STATUS"
+
+pm2 status
+
+# ============================================================
+# PROCESS CHECK
+# ============================================================
+
+echo ""
+
+if pm2 pid "$PM2_NAME" 2>/dev/null | grep -qE '^[0-9]+$'; then
+
+    success "Panel process is running."
+
+else
+
+    error "Panel process is not running."
+    echo ""
+    echo -e "${YELLOW}Check logs:${NC}"
+    echo "  pm2 logs ${PM2_NAME}"
+
+fi
+
+# ============================================================
+# FINAL
+# ============================================================
+
+echo ""
+echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${GREEN}              DRACO PANEL READY ✓${NC}"
+echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
+
+echo -e "${CYAN}Panel Directory:${NC}"
+echo "  $PANEL_PATH"
+
+echo ""
+
+echo -e "${CYAN}PM2 Process Name:${NC}"
+echo "  $PM2_NAME"
+
+echo ""
+
+echo -e "${CYAN}Useful Commands:${NC}"
+echo ""
+echo "  pm2 status"
+echo "  pm2 logs $PM2_NAME"
+echo "  pm2 restart $PM2_NAME"
+echo "  pm2 stop $PM2_NAME"
+echo "  pm2 delete $PM2_NAME"
+echo "  pm2 save"
+
+echo ""
+
+if command -v systemctl >/dev/null 2>&1 && \
+   [ -d /run/systemd/system ]; then
+
+    echo -e "${GREEN}✓ PM2 startup configured.${NC}"
+
+else
+
+    echo -e "${YELLOW}! Systemd unavailable — PM2 startup skipped.${NC}"
+
+fi
+
+echo ""
+echo -e "${GREEN}Installation completed successfully.${NC}"
+echo -e "${CYAN}Thank you for using Suprial Hosting Infrastructure.${NC}"
+echo ""
